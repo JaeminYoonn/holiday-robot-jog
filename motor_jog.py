@@ -7,21 +7,22 @@ from rclpy.qos import (
     QoSHistoryPolicy,
     QoSDurabilityPolicy,
 )
-from sensor_msgs.msg import JointState
 from std_msgs.msg import Header
+from std_msgs.msg import Float32MultiArray
 import time
 import numpy as np
 
-JOINT_NAMES = [f"joint{i+1}" for i in range(7)]
-JOINT_LIMITS = {name: (-3.14, 3.14) for name in JOINT_NAMES}
-PUBLISH_TOPIC = "/arm/target_joint_state"
-SUBSCRIBE_TOPIC = "/arm/joint_states"
-JOINT_VEL = 0.1  ## rad/s
+JOINT_NAMES = [f"motor{i+1}" for i in range(7)]
+JOINT_LIMITS = {name: (-10000, 10000) for name in JOINT_NAMES}
+PUBLISH_TOPIC = "/arm/target_positions"
+SUBSCRIBE_TOPIC = "/arm/motor_positions"
+JOINT_VEL = 20  ## rad/s
+KEYBOARD_DELTA_VAL = 10
 
 joint_histories = {name: [0.0] * 100 for name in JOINT_NAMES}
 actual_histories = {name: [0.0] * 100 for name in JOINT_NAMES}
 selected_joint = {"name": None}
-publishing_enabled = {"active": True}
+publishing_enabled = {"active": False}
 last_publish_time = {"t": 0.0}
 publish_interval = {"hz": 10}
 publish_timestamps = []
@@ -39,30 +40,27 @@ class JointInterfaceNode(Node):
             depth=1,
         )
         self.publisher = self.create_publisher(
-            JointState, PUBLISH_TOPIC, self.qos_profile
+            Float32MultiArray, PUBLISH_TOPIC, self.qos_profile
         )
         self.subscription = self.create_subscription(
-            JointState, SUBSCRIBE_TOPIC, self.joint_state_callback, self.qos_profile
+            Float32MultiArray,
+            SUBSCRIBE_TOPIC,
+            self.joint_state_callback,
+            self.qos_profile,
         )
         self.joint_values = {name: 0.0 for name in JOINT_NAMES}
         self.interpolated_joint_values = {name: 0.0 for name in JOINT_NAMES}
-        self.joint_efforts = {name: 0.0 for name in JOINT_NAMES}
         self.actual_joint_values = {name: 0.0 for name in JOINT_NAMES}
 
     def publish_joint_command(self):
         self.interpolate()
-        msg = JointState()
-        msg.header = Header()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.name = JOINT_NAMES
-        msg.position = [self.interpolated_joint_values[n] for n in JOINT_NAMES]
-        msg.effort = [self.joint_efforts[n] for n in JOINT_NAMES]
+        msg = Float32MultiArray()
+        msg.data = [self.interpolated_joint_values[n] for n in JOINT_NAMES]
         self.publisher.publish(msg)
 
     def joint_state_callback(self, msg):
-        for i, name in enumerate(msg.name):
-            if name in self.actual_joint_values and i < len(msg.position):
-                self.actual_joint_values[name] = msg.position[i]
+        for i, name in enumerate(JOINT_NAMES):
+            self.actual_joint_values[name] = msg.data[i]
 
     def interpolate(self):
         for n in JOINT_NAMES:
@@ -108,9 +106,9 @@ def keyboard_callback(sender, app_data):
         key_hold_start[key_code] = now
 
         if key_code == dpg.mvKey_Up:
-            delta = 0.05
+            delta = KEYBOARD_DELTA_VAL
         elif key_code == dpg.mvKey_Down:
-            delta = -0.05
+            delta = -KEYBOARD_DELTA_VAL
         else:
             return
 
@@ -143,18 +141,6 @@ def input_callback(sender):
     ros_node.joint_values[joint] = val
     dpg.set_value(f"{joint}_slider", val)
     dpg.set_value(f"{joint}_input", val)
-
-
-def update_joint_effort(sender):
-    joint = sender.replace("_effort", "")
-    ros_node.joint_efforts[joint] = dpg.get_value(sender)
-
-
-def set_all_efforts(sender):
-    val = dpg.get_value("Effort All")
-    for joint in JOINT_NAMES:
-        ros_node.joint_efforts[joint] = val
-        dpg.set_value(f"{joint}_effort", val)
 
 
 def create_highlight_theme():
@@ -203,7 +189,7 @@ def update_all():
         if dpg.does_item_exist(f"{joint}_actual_text"):
             dpg.set_value(
                 f"{joint}_actual_text",
-                f"Actual: {ros_node.actual_joint_values[joint]:.3f}",
+                f"Actual {joint}: {ros_node.actual_joint_values[joint]:.3f}",
             )
 
         if dpg.does_item_exist(f"{joint}_interpolated_input"):
@@ -248,17 +234,17 @@ def setup_ui():
 
     threading.Thread(target=ros_spin_loop, daemon=True).start()
     threading.Thread(target=run_update_loop, daemon=True).start()
-    with dpg.window(label="Joint Control Panel", tag="main_window"):
+    with dpg.window(label="Motor Control Panel", tag="main_window"):
         with dpg.group(horizontal=True):
             with dpg.child_window(width=600) as left_child:
-                dpg.add_text("Select Joint", tag="text_joint_select")
+                dpg.add_text("Select Motor", tag="text_joint_select")
                 with dpg.group(horizontal=True):
                     for name in JOINT_NAMES:
                         dpg.add_button(
                             label=name, tag=name, callback=select_joint_callback
                         )
                 dpg.add_spacer(height=10)
-                dpg.add_text("Joint Commands", tag="text_joint_commands")
+                dpg.add_text("Motor Commands", tag="text_joint_commands")
                 for name in JOINT_NAMES:
                     min_val, max_val = JOINT_LIMITS[name]
                     with dpg.group(horizontal=True):
@@ -287,29 +273,11 @@ def setup_ui():
                         )
 
                 dpg.add_spacer(height=10)
-                dpg.add_text("Joint States", tag="text_joint_states")
+                dpg.add_text("Motor States", tag="text_joint_states")
                 for joint in JOINT_NAMES:
                     dpg.add_text(
                         f"Actual: 0.000", tag=f"{joint}_actual_text", bullet=True
                     )
-
-                dpg.add_spacer(height=10)
-                dpg.add_text("Individual Effort Settings", tag="text_effort")
-                for name in JOINT_NAMES:
-                    dpg.add_input_float(
-                        tag=f"{name}_effort",
-                        label=f"{name} Effort",
-                        default_value=0.0,
-                        callback=update_joint_effort,
-                        width=350,
-                    )
-                dpg.add_input_float(
-                    tag="Effort All",
-                    label="Effort All",
-                    default_value=0.0,
-                    callback=set_all_efforts,
-                    width=350,
-                )
 
                 dpg.add_spacer(height=10)
                 dpg.add_text("Publishing Control", tag="text_control")
@@ -354,7 +322,7 @@ def setup_ui():
                             )
 
     dpg.create_viewport(
-        title="Joint Controller", width=1220, height=1200, resizable=True
+        title="Motor Controller", width=1220, height=1200, resizable=True
     )
     dpg.setup_dearpygui()
     dpg.set_primary_window("main_window", True)
