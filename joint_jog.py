@@ -10,18 +10,24 @@ from rclpy.qos import (
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Header
 import time
+import threading
+import copy
 
-JOINT_NAMES = [f"joint{i+1}" for i in range(7)]
+JOINT_NAMES = [f"arm/joint{i+1}" for i in range(7)]
 JOINT_LIMITS = {name: (-3.14, 3.14) for name in JOINT_NAMES}
 PUBLISH_TOPIC = "/arm/target_joint_state"
 SUBSCRIBE_TOPIC = "/arm/joint_states"
-JOINT_VEL = 0.1  ## rad/s
+# PUBLISH_TOPIC = "/arm/joint_states"
+# SUBSCRIBE_TOPIC = "/arm/joint_states_temp"
+JOINT_VEL = 0.2  ## rad/s
 KEYBOARD_DELTA_VAL = 0.05  ## rad
+LEN_JOINT_HISTORIES = 100
 
 joint_histories = {name: [0.0] * 100 for name in JOINT_NAMES}
 actual_histories = {name: [0.0] * 100 for name in JOINT_NAMES}
 selected_joint = {"name": None}
 publishing_enabled = {"active": False}
+autofit_enabled = {"active": True}
 last_publish_time = {"t": 0.0}
 publish_interval = {"hz": 10}
 publish_timestamps = []
@@ -48,6 +54,7 @@ class JointInterfaceNode(Node):
         self.interpolated_joint_values = {name: 0.0 for name in JOINT_NAMES}
         self.joint_efforts = {name: 0.0 for name in JOINT_NAMES}
         self.actual_joint_values = {name: 0.0 for name in JOINT_NAMES}
+        self.ini = True
 
     def publish_joint_command(self):
         self.interpolate()
@@ -63,6 +70,11 @@ class JointInterfaceNode(Node):
         for i, name in enumerate(msg.name):
             if name in self.actual_joint_values and i < len(msg.position):
                 self.actual_joint_values[name] = msg.position[i]
+
+        if self.ini:
+            self.joint_values = copy.deepcopy(self.actual_joint_values)
+            self.interpolated_joint_values = copy.deepcopy(self.actual_joint_values)
+            self.ini = False
 
     def interpolate(self):
         for n in JOINT_NAMES:
@@ -103,7 +115,7 @@ def keyboard_callback(sender, app_data):
         elapsed = now - last_time
 
         # Only allow once immediately or after hold threshold
-        if elapsed < 0.05 and last_time != 0:
+        if elapsed < 0.1 and last_time != 0:
             return
         key_hold_start[key_code] = now
 
@@ -174,18 +186,31 @@ def update_publish_interval(sender):
 def start_publishing():
     publishing_enabled["active"] = True
     print("Publishing started.")
+    dpg.bind_item_theme("pub_start_button", highlight_theme)
+    dpg.bind_item_theme("pub_stop_button", 0)
 
 
 def stop_publishing():
     publishing_enabled["active"] = False
     print("Publishing stopped.")
+    dpg.bind_item_theme("pub_stop_button", highlight_theme)
+    dpg.bind_item_theme("pub_start_button", 0)
+
+
+def auto_fit():
+    if autofit_enabled["active"]:
+        autofit_enabled["active"] = False
+        dpg.bind_item_theme("Autofit", 0)
+    else:
+        autofit_enabled["active"] = True
+        dpg.bind_item_theme("Autofit", highlight_theme)
 
 
 def update_all():
     now = ros_node.get_clock().now().nanoseconds / 1e9
     for joint in JOINT_NAMES:
         joint_histories[joint].append(ros_node.interpolated_joint_values[joint])
-        if len(joint_histories[joint]) > 100:
+        if len(joint_histories[joint]) > LEN_JOINT_HISTORIES:
             joint_histories[joint].pop(0)
         dpg.set_value(
             f"{joint}_line_cmd",
@@ -193,7 +218,7 @@ def update_all():
         )
 
         actual_histories[joint].append(ros_node.actual_joint_values[joint])
-        if len(actual_histories[joint]) > 100:
+        if len(actual_histories[joint]) > LEN_JOINT_HISTORIES:
             actual_histories[joint].pop(0)
         dpg.set_value(
             f"{joint}_line_actual",
@@ -208,10 +233,35 @@ def update_all():
 
         if dpg.does_item_exist(f"{joint}_interpolated_input"):
             dpg.set_value(
-                f"{joint}_interpolated_input", ros_node.interpolated_joint_values[joint]
+                f"{joint}_interpolated_input",
+                f"{ros_node.interpolated_joint_values[joint]:.3f}",
             )
 
-    rclpy.spin_once(ros_node, timeout_sec=0)
+        if autofit_enabled["active"]:
+            dpg.fit_axis_data(f"{joint}_yaxis")
+            min_val = (
+                min(
+                    min(actual_histories[joint]),
+                    min(joint_histories[joint]),
+                )
+                - 0.05
+            )
+            max_val = (
+                max(
+                    max(actual_histories[joint]),
+                    max(joint_histories[joint]),
+                )
+                + 0.05
+            )
+            dpg.set_axis_limits(f"{joint}_yaxis", min_val, max_val)
+
+            dpg.fit_axis_data(f"{joint}_xaxis")
+            dpg.set_axis_limits(f"{joint}_xaxis", 0, LEN_JOINT_HISTORIES)
+        else:
+            dpg.set_axis_limits_auto(f"{joint}_xaxis")
+            dpg.set_axis_limits_auto(f"{joint}_yaxis")
+
+    # rclpy.spin_once(ros_node, timeout_sec=0)
     if publishing_enabled["active"] and (
         now - last_publish_time["t"] >= 1 / publish_interval["hz"]
     ):
@@ -235,38 +285,37 @@ def update_all():
 
 
 def setup_ui():
-    import threading
-
     def ros_spin_loop():
         while rclpy.ok():
             rclpy.spin_once(ros_node, timeout_sec=0.01)
 
-    def run_update_loop():
-        while dpg.is_dearpygui_running():
-            update_all()
-            time.sleep(1.0 / 30)
-
     threading.Thread(target=ros_spin_loop, daemon=True).start()
-    threading.Thread(target=run_update_loop, daemon=True).start()
+
+    while ros_node.ini:
+        print("Cannot subscribe robot joint state")
+        time.sleep(0.5)
+
     with dpg.window(label="Joint Control Panel", tag="main_window"):
         with dpg.group(horizontal=True):
-            with dpg.child_window(width=600) as left_child:
+            with dpg.child_window(width=600):
                 dpg.add_text("Select Joint", tag="text_joint_select")
                 with dpg.group(horizontal=True):
                     for name in JOINT_NAMES:
                         dpg.add_button(
                             label=name, tag=name, callback=select_joint_callback
                         )
+
                 dpg.add_spacer(height=10)
                 dpg.add_text("Joint Commands", tag="text_joint_commands")
                 for name in JOINT_NAMES:
                     min_val, max_val = JOINT_LIMITS[name]
                     with dpg.group(horizontal=True):
+                        dpg.add_text(f"{name}", bullet=True)
                         dpg.add_slider_float(
                             tag=f"{name}_slider",
                             # label=f"{name} ({min_val:.2f} ~ {max_val:.2f})",
-                            label=f"{name}",
-                            default_value=0.0,
+                            # label=f"{name}",
+                            default_value=ros_node.actual_joint_values[name],
                             min_value=min_val,
                             max_value=max_val,
                             callback=slider_callback,
@@ -277,13 +326,14 @@ def setup_ui():
                         )
                         dpg.add_input_float(
                             tag=f"{name}_input",
-                            default_value=0.0,
+                            default_value=ros_node.actual_joint_values[name],
                             callback=input_callback,
                             width=100,
+                            on_enter=True,
                         )
                         dpg.add_text(
                             tag=f"{name}_interpolated_input",
-                            default_value=0.0,
+                            default_value=ros_node.actual_joint_values[name],
                         )
 
                 dpg.add_spacer(height=10)
@@ -302,6 +352,7 @@ def setup_ui():
                         default_value=0.0,
                         callback=update_joint_effort,
                         width=350,
+                        on_enter=True,
                     )
                 dpg.add_input_float(
                     tag="Effort All",
@@ -309,13 +360,20 @@ def setup_ui():
                     default_value=0.0,
                     callback=set_all_efforts,
                     width=350,
+                    on_enter=True,
                 )
 
                 dpg.add_spacer(height=10)
                 dpg.add_text("Publishing Control", tag="text_control")
                 with dpg.group(horizontal=True):
-                    dpg.add_button(label="Start", callback=start_publishing)
-                    dpg.add_button(label="Stop", callback=stop_publishing)
+                    dpg.add_button(
+                        label="Start", callback=start_publishing, tag="pub_start_button"
+                    )
+                    dpg.add_button(
+                        label="Stop", callback=stop_publishing, tag="pub_stop_button"
+                    )
+                dpg.bind_item_theme("pub_stop_button", highlight_theme)
+
                 with dpg.group(horizontal=False):
                     dpg.add_input_float(
                         tag="Publish Interval (Hz)",
@@ -325,13 +383,24 @@ def setup_ui():
                     )
                     dpg.add_text("", tag="Actual Publish Hz")
 
-            with dpg.child_window(width=600):
+            with dpg.child_window(width=600, tag="second_child_window"):
                 dpg.add_text("Realtime Plot", tag="text_graph")
+                dpg.add_button(label="AutoFit", callback=auto_fit, tag="Autofit")
+                dpg.bind_item_theme("Autofit", highlight_theme)
                 for name in JOINT_NAMES:
                     min_val, max_val = JOINT_LIMITS[name]
-                    with dpg.plot(label=f"{name} Plot", height=160, width=-1):
-                        dpg.add_plot_axis(dpg.mvXAxis, label="")
-                        with dpg.plot_axis(dpg.mvYAxis, label="") as y_axis:
+                    with dpg.plot(
+                        label=f"{name}_plot", height=160, width=-1, tag=f"{name}_plot"
+                    ):
+                        dpg.add_plot_legend()
+                        # dpg.add_plot_axis(dpg.mvXAxis, label="", auto_fit=True)
+                        # with dpg.plot_axis(
+                        #     dpg.mvYAxis, label="", auto_fit=True
+                        # ) as y_axis:
+                        dpg.add_plot_axis(dpg.mvXAxis, label="", tag=f"{name}_xaxis")
+                        with dpg.plot_axis(
+                            dpg.mvYAxis, label="", tag=f"{name}_yaxis"
+                        ) as y_axis:
                             # dpg.set_axis_limits(y_axis, min_val, max_val)
                             dpg.add_line_series(
                                 list(range(100)),
@@ -362,8 +431,6 @@ def setup_ui():
         dpg.add_key_down_handler(callback=keyboard_callback)
         dpg.add_key_release_handler(callback=lambda s, a: clear_last_key())
     dpg.show_viewport()
-
-    import threading
 
     def run_update_loop():
         while dpg.is_dearpygui_running():
