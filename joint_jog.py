@@ -16,10 +16,10 @@ import numpy as np
 
 JOINT_NAMES = [f"arm/joint{i+1}" for i in range(7)]
 JOINT_LIMITS = {name: (-3.14, 3.14) for name in JOINT_NAMES}
-PUBLISH_TOPIC = "/arm/target_joint_state"
-SUBSCRIBE_TOPIC = "/arm/joint_states"
-# PUBLISH_TOPIC = "/arm/joint_states"
-# SUBSCRIBE_TOPIC = "/arm/joint_states_temp"
+# PUBLISH_TOPIC = "/arm/target_joint_state"
+# SUBSCRIBE_TOPIC = "/arm/joint_states"
+PUBLISH_TOPIC = "/arm/joint_states"
+SUBSCRIBE_TOPIC = "/arm/joint_states_temp"
 JOINT_VEL = 0.2  ## rad/s
 KEYBOARD_DELTA_VAL = 0.05  ## rad
 LEN_JOINT_HISTORIES = 300
@@ -73,7 +73,12 @@ class JointInterfaceNode(Node):
                     self.joint_values[n] = self.sin_ref_val + self.sin_mag * np.sin(
                         self.sin_omega * (time.time() - self.sin_time)
                     )
-                    self.interpolated_joint_values[n] = self.joint_values[n]
+                    self.interpolated_joint_values[n] = copy.deepcopy(
+                        self.joint_values[n]
+                    )
+
+                    dpg.set_value(f"{n}_slider", self.joint_values[n])
+                    dpg.set_value(f"{n}_input", self.joint_values[n])
 
         msg = JointState()
         msg.header = Header()
@@ -196,6 +201,7 @@ def input_callback(sender):
     min_val, max_val = JOINT_LIMITS[joint]
     val = max(min_val, min(max_val, val))
     ros_node.joint_values[joint] = val
+    print(val)
     dpg.set_value(f"{joint}_slider", val)
     dpg.set_value(f"{joint}_input", val)
 
@@ -476,7 +482,7 @@ def setup_ui():
                 with dpg.group(horizontal=False):
                     dpg.add_input_float(
                         tag="Publish Interval (Hz)",
-                        default_value=10,
+                        default_value=publish_interval["hz"],
                         callback=update_publish_interval,
                         on_enter=True,
                     )
