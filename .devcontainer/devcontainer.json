@@ -1,0 +1,68 @@
+{
+  "name": "holiday-robot-jog",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".",
+    "args": {
+      "BASE_IMAGE": "holidayrobotics/robot:v0.4",
+      "USER_NAME": "holiday"
+    }
+  },
+  "containerEnv": {
+    "DISPLAY": "${localEnv:DISPLAY}",
+    "XAUTHORITY": "${localEnv:XAUTHORITY}",
+    "TERM": "xterm-256color",
+    "ROS_DOMAIN_ID": "138"
+  },
+  "remoteEnv": {},
+  "mounts": [
+    "source=${localEnv:HOME}/.gitconfig,target=/etc/gitconfig,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.ssh,target=/root/.ssh,type=bind,consistency=cached"
+  ],
+  "capAdd": [
+    "SYS_PTRACE"
+  ],
+  "privileged": true,
+  "securityOpt": [
+    "seccomp=unconfined"
+  ],
+  "runArgs": [
+    "--name=${localWorkspaceFolderBasename}",
+    "--pid=host",
+    "--ipc=host",
+    "--network=host",
+    "--runtime=nvidia",
+    "--gpus=all",
+    "--device=/dev"
+  ],
+  "initializeCommand": "xhost +local:docker",
+  "postCreateCommand": "sh .devcontainer/postCreateCommand.sh",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "C_Cpp.default.cppStandard": "c++17"
+      },
+      "extensions": [
+        "donjayamanne.python-extension-pack",
+        "DavidAnson.vscode-markdownlint",
+        "eamodio.gitlens",
+        "jbenden.c-cpp-flylint",
+        "ms-azuretools.vscode-docker",
+        "ms-python.black-formatter",
+        "ms-python.mypy-type-checker",
+        "ms-python.pylint",
+        "ms-vscode.cpptools-extension-pack",
+        "msfukui.eof-mark",
+        "oderwat.indent-rainbow",
+        "shardulm94.trailing-spaces",
+        "spmeesseman.vscode-taskexplorer",
+        "streetsidesoftware.code-spell-checker",
+        "usernamehw.errorlens",
+        "vscode-icons-team.vscode-icons",
+        "xaver.clang-format",
+        "yzhang.markdown-all-in-one",
+        "ZainChen.json"
+      ]
+    }
+  }
+}
