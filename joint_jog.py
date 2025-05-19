@@ -540,6 +540,7 @@ def setup_ui():
                                 f"{name}_line_actual", line_thickness_theme
                             )
 
+    dpg.set_exit_callback(on_exit)
     dpg.create_viewport(
         title="Joint Controller", width=1220, height=1200, resizable=True
     )
@@ -557,6 +558,7 @@ def setup_ui():
 
     threading.Thread(target=run_update_loop, daemon=True).start()
     dpg.start_dearpygui()
+    dpg.destroy_context()
 
 
 def create_line_thickness_theme(thickness=5.0):
@@ -567,6 +569,11 @@ def create_line_thickness_theme(thickness=5.0):
             )
 
     return theme
+
+
+def on_exit():
+    rclpy.shutdown()
+    dpg.stop_dearpygui()
 
 
 def main():
