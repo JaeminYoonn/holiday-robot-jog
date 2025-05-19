@@ -153,9 +153,6 @@ def keyboard_callback(sender, app_data):
         return
 
     key_code, is_down = app_data
-    joint = selected_joint["name"]
-    if joint is None:
-        return
 
     if is_down:
         now = ros_node.get_clock().now().nanoseconds / 1e9
@@ -166,6 +163,15 @@ def keyboard_callback(sender, app_data):
         if elapsed < 0.1 and last_time != 0:
             return
         key_hold_start[key_code] = now
+
+        if key_code == 524:  ## space
+            start_publishing()
+        elif key_code == 526:  ## exc
+            stop_publishing()
+
+        joint = selected_joint["name"]
+        if joint is None:
+            return
 
         if key_code == dpg.mvKey_Up:
             delta = KEYBOARD_DELTA_VAL
@@ -472,10 +478,14 @@ def setup_ui():
                 dpg.add_text("Publishing Control", tag="text_control")
                 with dpg.group(horizontal=True):
                     dpg.add_button(
-                        label="Start", callback=start_publishing, tag="pub_start_button"
+                        label="Start (SPACE)",
+                        callback=start_publishing,
+                        tag="pub_start_button",
                     )
                     dpg.add_button(
-                        label="Stop", callback=stop_publishing, tag="pub_stop_button"
+                        label="Stop (ESC)",
+                        callback=stop_publishing,
+                        tag="pub_stop_button",
                     )
                 dpg.bind_item_theme("pub_stop_button", highlight_theme)
 
