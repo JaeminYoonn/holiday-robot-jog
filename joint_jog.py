@@ -14,12 +14,14 @@ import threading
 import copy
 import numpy as np
 
-JOINT_NAMES = [f"arm/joint{i+1}" for i in range(7)]
+# JOINT_NAMES = [f"arm/joint{i+1}" for i in range(7)]
+JOINT_NAMES = [f"joint{i+1}" for i in range(7)]
 JOINT_LIMITS = {name: (-3.14, 3.14) for name in JOINT_NAMES}
-# PUBLISH_TOPIC = "/arm/target_joint_state"
-# SUBSCRIBE_TOPIC = "/arm/joint_states"
-PUBLISH_TOPIC = "/arm/joint_states"
-SUBSCRIBE_TOPIC = "/arm/joint_states_temp"
+JOINT_EFFORT = 0.8
+PUBLISH_TOPIC = "/arm/target_joint_state"
+SUBSCRIBE_TOPIC = "/arm/joint_state"
+# PUBLISH_TOPIC = "/arm/joint_states"
+# SUBSCRIBE_TOPIC = "/arm/joint_states_temp"
 JOINT_VEL = 0.2  ## rad/s
 KEYBOARD_DELTA_VAL = 0.05  ## rad
 LEN_JOINT_HISTORIES = 300
@@ -54,7 +56,7 @@ class JointInterfaceNode(Node):
 
         self.joint_values = {name: 0.0 for name in JOINT_NAMES}
         self.interpolated_joint_values = {name: 0.0 for name in JOINT_NAMES}
-        self.joint_efforts = {name: 0.0 for name in JOINT_NAMES}
+        self.joint_efforts = {name: JOINT_EFFORT for name in JOINT_NAMES}
         self.actual_joint_values = {name: 0.0 for name in JOINT_NAMES}
         self.ini = True
 
@@ -85,6 +87,7 @@ class JointInterfaceNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = JOINT_NAMES
         msg.position = [self.interpolated_joint_values[n] for n in JOINT_NAMES]
+        msg.velocity = [0.0 for n in JOINT_NAMES]
         msg.effort = [self.joint_efforts[n] for n in JOINT_NAMES]
 
         self.publisher.publish(msg)
@@ -460,7 +463,7 @@ def setup_ui():
                     dpg.add_input_float(
                         tag=f"{name}_effort",
                         label=f"{name} Effort",
-                        default_value=0.0,
+                        default_value=JOINT_EFFORT,
                         callback=update_joint_effort,
                         width=350,
                         on_enter=True,
@@ -468,7 +471,7 @@ def setup_ui():
                 dpg.add_input_float(
                     tag="Effort All",
                     label="Effort All",
-                    default_value=0.0,
+                    default_value=JOINT_EFFORT,
                     callback=set_all_efforts,
                     width=350,
                     on_enter=True,
