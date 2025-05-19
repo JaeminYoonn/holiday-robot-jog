@@ -12,6 +12,7 @@ from std_msgs.msg import Header
 import time
 import threading
 import copy
+import numpy as np
 
 JOINT_NAMES = [f"arm/joint{i+1}" for i in range(7)]
 JOINT_LIMITS = {name: (-3.14, 3.14) for name in JOINT_NAMES}
@@ -21,15 +22,15 @@ SUBSCRIBE_TOPIC = "/arm/joint_states"
 # SUBSCRIBE_TOPIC = "/arm/joint_states_temp"
 JOINT_VEL = 0.2  ## rad/s
 KEYBOARD_DELTA_VAL = 0.05  ## rad
-LEN_JOINT_HISTORIES = 100
+LEN_JOINT_HISTORIES = 300
 
-joint_histories = {name: [0.0] * 100 for name in JOINT_NAMES}
-actual_histories = {name: [0.0] * 100 for name in JOINT_NAMES}
+joint_histories = {name: [0.0] * LEN_JOINT_HISTORIES for name in JOINT_NAMES}
+actual_histories = {name: [0.0] * LEN_JOINT_HISTORIES for name in JOINT_NAMES}
 selected_joint = {"name": None}
 publishing_enabled = {"active": False}
 autofit_enabled = {"active": True}
 last_publish_time = {"t": 0.0}
-publish_interval = {"hz": 10}
+publish_interval = {"hz": 100}
 publish_timestamps = []
 key_hold_start = {}
 highlight_theme = None
@@ -50,20 +51,37 @@ class JointInterfaceNode(Node):
         self.subscription = self.create_subscription(
             JointState, SUBSCRIBE_TOPIC, self.joint_state_callback, self.qos_profile
         )
+
         self.joint_values = {name: 0.0 for name in JOINT_NAMES}
         self.interpolated_joint_values = {name: 0.0 for name in JOINT_NAMES}
         self.joint_efforts = {name: 0.0 for name in JOINT_NAMES}
         self.actual_joint_values = {name: 0.0 for name in JOINT_NAMES}
         self.ini = True
 
+        self.sin_mag = 0.0
+        self.sin_omega = 0.0
+        self.sin_time = 0.0
+        self.sin_ref_val = 0.0
+        self.sin_mode = False
+        self.sin_joint_name = None
+
     def publish_joint_command(self):
         self.interpolate()
+        if self.sin_mode:
+            for n in JOINT_NAMES:
+                if self.sin_joint_name == n:
+                    self.joint_values[n] = self.sin_ref_val + self.sin_mag * np.sin(
+                        self.sin_omega * (time.time() - self.sin_time)
+                    )
+                    self.interpolated_joint_values[n] = self.joint_values[n]
+
         msg = JointState()
         msg.header = Header()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = JOINT_NAMES
         msg.position = [self.interpolated_joint_values[n] for n in JOINT_NAMES]
         msg.effort = [self.joint_efforts[n] for n in JOINT_NAMES]
+
         self.publisher.publish(msg)
 
     def joint_state_callback(self, msg):
@@ -93,11 +111,36 @@ def select_joint_callback(sender):
         # Deselect if already selected
         dpg.bind_item_theme(sender, 0)
         selected_joint["name"] = None
+        ros_node.sin_mode = False
     else:
         for j in JOINT_NAMES:
             dpg.bind_item_theme(j, 0)
+            dpg.bind_item_theme(f"Sin({j})", 0)
         dpg.bind_item_theme(sender, highlight_theme)
         selected_joint["name"] = sender
+        ros_node.sin_mode = False
+
+
+def select_sin_mode_callback(sender):
+    if selected_joint["name"] == sender:
+        # Deselect if already selected
+        dpg.bind_item_theme(sender, 0)
+        selected_joint["name"] = None
+        ros_node.sin_mode = False
+    else:
+        for j in JOINT_NAMES:
+            dpg.bind_item_theme(j, 0)
+            dpg.bind_item_theme(f"Sin({j})", 0)
+        dpg.bind_item_theme(sender, highlight_theme)
+        selected_joint["name"] = sender
+        ros_node.sin_time = time.time()
+
+        for name in JOINT_NAMES:
+            if name in sender:
+                # ros_node.sin_ref_val = ros_node.actual_joint_values[name]
+                ros_node.sin_ref_val = ros_node.interpolated_joint_values[name]
+                ros_node.sin_joint_name = name
+        ros_node.sin_mode = True
 
 
 def keyboard_callback(sender, app_data):
@@ -155,6 +198,24 @@ def input_callback(sender):
     ros_node.joint_values[joint] = val
     dpg.set_value(f"{joint}_slider", val)
     dpg.set_value(f"{joint}_input", val)
+
+
+def sin_mag_callback(sender):
+    val = dpg.get_value(sender)
+    if not ros_node.sin_mode:
+        dpg.set_value(f"sin_mag", val)
+        ros_node.sin_mag = val
+    else:
+        dpg.set_value(f"sin_mag", ros_node.sin_mag)
+
+
+def sin_omega_callback(sender):
+    val = dpg.get_value(sender)
+    if not ros_node.sin_mode:
+        dpg.set_value(f"sin_omega", val)
+        ros_node.sin_omega = val
+    else:
+        dpg.set_value(f"sin_omega", ros_node.sin_omega)
 
 
 def update_joint_effort(sender):
@@ -298,12 +359,50 @@ def setup_ui():
     with dpg.window(label="Joint Control Panel", tag="main_window"):
         with dpg.group(horizontal=True):
             with dpg.child_window(width=600):
-                dpg.add_text("Select Joint", tag="text_joint_select")
+
                 with dpg.group(horizontal=True):
-                    for name in JOINT_NAMES:
-                        dpg.add_button(
-                            label=name, tag=name, callback=select_joint_callback
-                        )
+                    with dpg.group():
+                        dpg.add_text("Select Joint", tag="text_joint_select")
+                        for name in JOINT_NAMES:
+                            dpg.add_button(
+                                label=name, tag=name, callback=select_joint_callback
+                            )
+
+                    dpg.add_spacer(width=20)
+                    with dpg.group():
+                        dpg.add_text("Sinusoidal Motion", tag="text_sin_motion")
+                        for name in JOINT_NAMES:
+                            dpg.add_button(
+                                label=f"Sin({name})",
+                                tag=f"Sin({name})",
+                                callback=select_sin_mode_callback,
+                            )
+
+                    dpg.add_spacer(width=10)
+                    with dpg.group():
+                        dpg.add_spacer(height=70)
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(
+                                f"Sin Magnitude:",
+                            )
+                            dpg.add_input_float(
+                                tag="sin_mag",
+                                default_value=0.0,
+                                callback=sin_mag_callback,
+                                width=100,
+                                on_enter=True,
+                            )
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(
+                                f"Sin Omega:",
+                            )
+                            dpg.add_input_float(
+                                tag="sin_omega",
+                                default_value=0.0,
+                                callback=sin_omega_callback,
+                                width=100,
+                                on_enter=True,
+                            )
 
                 dpg.add_spacer(height=10)
                 dpg.add_text("Joint Commands", tag="text_joint_commands")
