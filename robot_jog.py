@@ -8,12 +8,17 @@ from rclpy.qos import (
     QoSDurabilityPolicy,
 )
 from sensor_msgs.msg import JointState
+from geometry_msgs.msg import Pose
 from std_msgs.msg import Header
 import time
 import threading
 import copy
 import numpy as np
 import argparse
+from hday_motion_planner_msgs.srv import Move
+
+# from hday_motion_planner_msgs.msg import CartesianState
+from scipy.spatial.transform import Rotation as sciR
 
 
 parser = argparse.ArgumentParser()
@@ -55,6 +60,11 @@ class JointInterfaceNode(Node):
             self.qos_profile,
         )
 
+        self.motion_planner_client = self.create_client(
+            Move, "/hday/engine/motion_planner/move"
+        )
+        self.move_srv = Move.Request()
+
         self.joint_values = {name: 0.0 for name in joint_names}
         self.interpolated_joint_values = {name: 0.0 for name in joint_names}
         self.joint_efforts = {name: joint_effort for name in joint_names}
@@ -92,6 +102,46 @@ class JointInterfaceNode(Node):
         msg.effort = [self.joint_efforts[n] for n in self.joint_names]
 
         self.publisher.publish(msg)
+
+    def send_mp_command(self, joint_target, cartesian_target=None, mode=None):
+        self.move_srv.stamp = self.get_clock().now().to_msg()
+        # if mode == "cartesian":
+        #     msg = CartesianState()
+        #     msg.name = "hand_mount_link"
+        #     msg.base_frame = "link0"
+
+        #     msg_pose = Pose()
+        #     msg_pose.position.x = cartesian_target[0, 3]
+        #     msg_pose.position.y = cartesian_target[1, 3]
+        #     msg_pose.position.z = cartesian_target[2, 3]
+        #     quat = sciR.from_matrix(cartesian_target[:3, :3]).as_quat()
+        #     msg_pose.orientation.x = quat[0]
+        #     msg_pose.orientation.y = quat[1]
+        #     msg_pose.orientation.z = quat[2]
+        #     msg_pose.orientation.w = quat[3]
+
+        #     msg.pose = Pose()
+        #     self.move_srv.cartesian_target = msg
+        # elif mode == "joint":
+        #     msg = JointState()
+        #     msg.header = Header()
+        #     msg.header.stamp = self.move_srv.stamp
+        #     msg.name = self.joint_names
+        #     msg.position = joint_target.tolist()
+        #     msg.velocity = [0.0 for i in joint_target.shape[0]]
+        #     msg.effort = [0.0 for i in joint_target.shape[0]]
+        #     self.move_srv.joint_target = msg
+
+        msg = JointState()
+        msg.header = Header()
+        msg.header.stamp = self.move_srv.stamp
+        msg.name = self.joint_names
+        msg.position = joint_target.tolist()
+        msg.velocity = [0.0 for i in range(joint_target.shape[0])]
+        msg.effort = [0.0 for i in range(joint_target.shape[0])]
+        self.move_srv.joint_target = msg
+
+        self.future = self.motion_planner_client.call_async(self.move_srv)
 
     def joint_state_callback(self, msg):
         for i, name in enumerate(msg.name):
@@ -286,6 +336,11 @@ class RobotJog:
         print("Publishing stopped.")
         dpg.bind_item_theme("pub_stop_button", self.highlight_theme)
         dpg.bind_item_theme("pub_start_button", 0)
+
+    def set_zero(self):
+        joint_target = np.zeros(len(self.joint_names))
+        self.ros_node.send_mp_command(joint_target=joint_target)
+        print("Set ZERO")
 
     def auto_fit(self):
         if self.autofit_enabled["active"]:
@@ -556,6 +611,15 @@ class RobotJog:
                             on_enter=True,
                         )
                         dpg.add_text("", tag="Actual Publish Hz")
+
+                    # dpg.add_spacer(height=10)
+                    dpg.add_text("Motion Planner Command", tag="text_mp_command")
+                    with dpg.group(horizontal=False):
+                        dpg.add_button(
+                            label="ZERO",
+                            callback=self.set_zero,
+                            tag="set_zero_button",
+                        )
 
                 with dpg.child_window(width=600, tag="second_child_window"):
                     dpg.add_text("Realtime Plot", tag="text_graph")
