@@ -16,16 +16,18 @@ import copy
 import numpy as np
 import argparse
 from hday_motion_planner_msgs.srv import Move
+from hday_motion_planner_msgs.msg import CartesianState
 
-# from hday_motion_planner_msgs.msg import CartesianState
 from scipy.spatial.transform import Rotation as sciR
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_joints", type=float, default=7)
 parser.add_argument("--pub_topic_name", type=str, default="/arm/target_joint_state")
-parser.add_argument("--sub_topic_name", type=str, default="/arm/joint_state")
+parser.add_argument("--sub_topic_name_joint", type=str, default="/arm/joint_state")
+parser.add_argument("--sub_topic_name_cart", type=str, default="/arm/cartesian_state")
 parser.add_argument("--len_histories", type=float, default=1000)
+parser.add_argument("--end_effector_link", type=str, default=None)
 args = parser.parse_args()
 
 publish_interval = {"hz": 100}
@@ -38,7 +40,8 @@ class JointInterfaceNode(Node):
         joint_vel,
         joint_effort,
         publish_topic_name,
-        subscribe_topic_name,
+        subscribe_topic_name_joint,
+        subscribe_topic_name_cart,
     ):
         super().__init__("joint_interface_gui")
         self.joint_names = joint_names
@@ -53,10 +56,16 @@ class JointInterfaceNode(Node):
         self.publisher = self.create_publisher(
             JointState, publish_topic_name, self.qos_profile
         )
-        self.subscription = self.create_subscription(
+        self.joint_subscription = self.create_subscription(
             JointState,
-            subscribe_topic_name,
+            subscribe_topic_name_joint,
             self.joint_state_callback,
+            self.qos_profile,
+        )
+        self.cart_subscription = self.create_subscription(
+            CartesianState,
+            subscribe_topic_name_cart,
+            self.cartesian_state_callback,
             self.qos_profile,
         )
 
@@ -69,6 +78,7 @@ class JointInterfaceNode(Node):
         self.interpolated_joint_values = {name: 0.0 for name in joint_names}
         self.joint_efforts = {name: joint_effort for name in joint_names}
         self.actual_joint_values = {name: 0.0 for name in joint_names}
+        self.cart_values = {}
         self.ini = True
 
         self.sin_mag = 0.0
@@ -103,43 +113,20 @@ class JointInterfaceNode(Node):
 
         self.publisher.publish(msg)
 
-    def send_mp_command(self, joint_target, cartesian_target=None, mode=None):
+    def send_mp_command(self, joint_target, cartesian_target=None, mode="joint"):
         self.move_srv.stamp = self.get_clock().now().to_msg()
-        # if mode == "cartesian":
-        #     msg = CartesianState()
-        #     msg.name = "hand_mount_link"
-        #     msg.base_frame = "link0"
 
-        #     msg_pose = Pose()
-        #     msg_pose.position.x = cartesian_target[0, 3]
-        #     msg_pose.position.y = cartesian_target[1, 3]
-        #     msg_pose.position.z = cartesian_target[2, 3]
-        #     quat = sciR.from_matrix(cartesian_target[:3, :3]).as_quat()
-        #     msg_pose.orientation.x = quat[0]
-        #     msg_pose.orientation.y = quat[1]
-        #     msg_pose.orientation.z = quat[2]
-        #     msg_pose.orientation.w = quat[3]
-
-        #     msg.pose = Pose()
-        #     self.move_srv.cartesian_target = msg
-        # elif mode == "joint":
-        #     msg = JointState()
-        #     msg.header = Header()
-        #     msg.header.stamp = self.move_srv.stamp
-        #     msg.name = self.joint_names
-        #     msg.position = joint_target.tolist()
-        #     msg.velocity = [0.0 for i in joint_target.shape[0]]
-        #     msg.effort = [0.0 for i in joint_target.shape[0]]
-        #     self.move_srv.joint_target = msg
-
-        msg = JointState()
-        msg.header = Header()
-        msg.header.stamp = self.move_srv.stamp
-        msg.name = self.joint_names
-        msg.position = joint_target.tolist()
-        msg.velocity = [0.0 for i in range(joint_target.shape[0])]
-        msg.effort = [0.0 for i in range(joint_target.shape[0])]
-        self.move_srv.joint_target = msg
+        if mode == "joint":
+            msg = JointState()
+            msg.header = Header()
+            msg.header.stamp = self.move_srv.stamp
+            msg.name = self.joint_names
+            msg.position = joint_target.tolist()
+            msg.velocity = [0.0 for i in range(joint_target.shape[0])]
+            msg.effort = [0.0 for i in range(joint_target.shape[0])]
+            self.move_srv.joint_target = msg
+        elif mode == "cartesian":
+            self.move_srv.cartesian_target = cartesian_target
 
         self.future = self.motion_planner_client.call_async(self.move_srv)
 
@@ -152,6 +139,10 @@ class JointInterfaceNode(Node):
             self.joint_values = copy.deepcopy(self.actual_joint_values)
             self.interpolated_joint_values = copy.deepcopy(self.actual_joint_values)
             self.ini = False
+
+    def cartesian_state_callback(self, msg):
+        for name in msg.name:
+            self.cart_values[name] = msg
 
     def interpolate(self):
         for n in self.joint_names:
@@ -201,6 +192,8 @@ class RobotJog:
 
         self.highlight_theme = self.create_highlight_theme()
         self.publish_timestamps = []
+
+        self.cart_delta = 0.0
 
     def select_joint_callback(self, sender):
         if self.selected_joint["name"] == sender:
@@ -311,6 +304,11 @@ class RobotJog:
         else:
             dpg.set_value(f"sin_omega", self.ros_node.sin_omega)
 
+    def cart_delta_callback(self, sender):
+        val = dpg.get_value(sender)
+        dpg.set_value(f"cart_delta", val)
+        self.cart_delta = val
+
     def update_joint_effort(self, sender):
         joint = sender.replace("_effort", "")
         self.ros_node.joint_efforts[joint] = dpg.get_value(sender)
@@ -341,6 +339,48 @@ class RobotJog:
         joint_target = np.zeros(len(self.joint_names))
         self.ros_node.send_mp_command(joint_target=joint_target)
         print("Set ZERO")
+
+    def cart_set(self, dir):
+        if len(self.ros_node.cart_values) > 0:
+            if args.end_effector_link in self.ros_node.cart_values:
+                cart_value = self.ros_node.cart_values[args.end_effector_link]
+                if dir == "+x":
+                    cart_value.pose.position.x += self.cart_delta
+                elif dir == "-x":
+                    cart_value.pose.position.x -= self.cart_delta
+                elif dir == "+y":
+                    cart_value.pose.position.y += self.cart_delta
+                elif dir == "-y":
+                    cart_value.pose.position.y -= self.cart_delta
+                elif dir == "+z":
+                    cart_value.pose.position.z += self.cart_delta
+                elif dir == "-z":
+                    cart_value.pose.position.z -= self.cart_delta
+                self.ros_node.send_mp_command(
+                    cartesian_target=cart_value, mode="cartesian"
+                )
+            else:
+                print("End-Effector link does not exist")
+        else:
+            print("Cannot subscribe cartesian pose")
+
+    def plus_x(self):
+        self.cart_set("+x")
+
+    def minus_x(self):
+        self.cart_set("-x")
+
+    def plus_y(self):
+        self.cart_set("+y")
+
+    def minus_y(self):
+        self.cart_set("-y")
+
+    def plus_z(self):
+        self.cart_set("+z")
+
+    def minus_z(self):
+        self.cart_set("-z")
 
     def auto_fit(self):
         if self.autofit_enabled["active"]:
@@ -614,12 +654,72 @@ class RobotJog:
 
                     # dpg.add_spacer(height=10)
                     dpg.add_text("Motion Planner Command", tag="text_mp_command")
-                    with dpg.group(horizontal=False):
+                    with dpg.group(horizontal=True):
                         dpg.add_button(
                             label="ZERO",
                             callback=self.set_zero,
                             tag="set_zero_button",
+                            width=60,
+                            height=40,
                         )
+
+                        if args.end_effector_link is not None:
+                            dpg.add_button(
+                                label="+X",
+                                callback=self.plus_x,
+                                tag="plus_x_button",
+                                width=60,
+                                height=40,
+                            )
+                            dpg.add_button(
+                                label="-X",
+                                callback=self.minus_x,
+                                tag="minus_x_button",
+                                width=60,
+                                height=40,
+                            )
+                            dpg.add_button(
+                                label="+Y",
+                                callback=self.plus_y,
+                                tag="plus_y_button",
+                                width=60,
+                                height=40,
+                            )
+                            dpg.add_button(
+                                label="-Y",
+                                callback=self.minus_y,
+                                tag="minus_y_button",
+                                width=60,
+                                height=40,
+                            )
+                            dpg.add_button(
+                                label="+Z",
+                                callback=self.plus_z,
+                                tag="plus_z_button",
+                                width=60,
+                                height=40,
+                            )
+                            dpg.add_button(
+                                label="-Z",
+                                callback=self.minus_z,
+                                tag="minus_z_button",
+                                width=60,
+                                height=40,
+                            )
+
+                    if args.end_effector_link is not None:
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(
+                                f"Cartesian Delta:",
+                            )
+                            dpg.add_input_float(
+                                tag="cart_delta",
+                                default_value=0.0,
+                                callback=self.cart_delta_callback,
+                                width=100,
+                                step=0.01,
+                                on_enter=True,
+                            )
 
                 with dpg.child_window(width=600, tag="second_child_window"):
                     dpg.add_text("Realtime Plot", tag="text_graph")
@@ -696,7 +796,8 @@ def main():
     joint_limits = {name: (-3.14, 3.14) for name in joint_names}
     joint_effort = 0.8
     publish_topic_name = args.pub_topic_name
-    subscribe_topic_name = args.sub_topic_name
+    subscribe_topic_name_joint = args.sub_topic_name_joint
+    subscribe_topic_name_cart = args.sub_topic_name_cart
     # publish_topic_name = "/arm/joint_states"
     # subscribe_topic_name = "/arm/joint_states_temp"
     joint_vel = 0.2  ## rad/s
@@ -705,7 +806,12 @@ def main():
 
     rclpy.init()
     ros_node = JointInterfaceNode(
-        joint_names, joint_vel, joint_effort, publish_topic_name, subscribe_topic_name
+        joint_names,
+        joint_vel,
+        joint_effort,
+        publish_topic_name,
+        subscribe_topic_name_joint,
+        subscribe_topic_name_cart,
     )
     dpg.create_context()
     robot_jog = RobotJog(
