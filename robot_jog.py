@@ -25,7 +25,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--num_joints", type=float, default=7)
 parser.add_argument("--pub_topic_name", type=str, default="/arm/target_joint_state")
 parser.add_argument("--sub_topic_name_joint", type=str, default="/arm/joint_state")
-parser.add_argument("--sub_topic_name_cart", type=str, default="/hday/engine/motion_planner/end_effector_poses")
+parser.add_argument(
+    "--sub_topic_name_cart",
+    type=str,
+    default="/hday/engine/motion_planner/end_effector_poses",
+)
 parser.add_argument("--len_histories", type=float, default=1000)
 parser.add_argument("--end_effector_link", type=str, default=None)
 args = parser.parse_args()
@@ -145,7 +149,11 @@ class JointInterfaceNode(Node):
 
     def cartesian_state_callback(self, msg):
         for name, base_frame, pose in zip(msg.name, msg.base_frame, msg.pose):
-            self.cart_values[name] = {"name": name, "base_frame": base_frame, "pose": pose}
+            self.cart_values[name] = {
+                "name": name,
+                "base_frame": base_frame,
+                "pose": pose,
+            }
 
     def interpolate(self):
         for n in self.joint_names:
@@ -196,7 +204,7 @@ class RobotJog:
         self.highlight_theme = self.create_highlight_theme()
         self.publish_timestamps = []
 
-        self.cart_delta = 0.0
+        self.cart_position_delta = 0.0
 
     def select_joint_callback(self, sender):
         if self.selected_joint["name"] == sender:
@@ -307,10 +315,15 @@ class RobotJog:
         else:
             dpg.set_value(f"sin_omega", self.ros_node.sin_omega)
 
-    def cart_delta_callback(self, sender):
+    def cart_position_delta_callback(self, sender):
         val = dpg.get_value(sender)
-        dpg.set_value(f"cart_delta", val)
-        self.cart_delta = val
+        dpg.set_value(f"cart_position_delta", val)
+        self.cart_position_delta = val
+
+    def cart_orientation_delta_callback(self, sender):
+        val = dpg.get_value(sender)
+        dpg.set_value(f"cart_orientation_delta", val)
+        self.cart_orientation_delta = val
 
     def update_joint_effort(self, sender):
         joint = sender.replace("_effort", "")
@@ -354,25 +367,72 @@ class RobotJog:
         if len(self.ros_node.cart_values) > 0:
             if args.end_effector_link in self.ros_node.cart_values.keys():
                 msg = CartesianState()
-                msg.name.append(self.ros_node.cart_values[args.end_effector_link]["name"])
-                msg.base_frame.append(self.ros_node.cart_values[args.end_effector_link]["base_frame"])
+                msg.name.append(
+                    self.ros_node.cart_values[args.end_effector_link]["name"]
+                )
+                msg.base_frame.append(
+                    self.ros_node.cart_values[args.end_effector_link]["base_frame"]
+                )
                 pose = self.ros_node.cart_values[args.end_effector_link]["pose"]
                 if dir == "+x":
-                    pose.position.x += self.cart_delta
+                    pose.position.x += self.cart_position_delta
                 elif dir == "-x":
-                    pose.position.x -= self.cart_delta
+                    pose.position.x -= self.cart_position_delta
                 elif dir == "+y":
-                    pose.position.y += self.cart_delta
+                    pose.position.y += self.cart_position_delta
                 elif dir == "-y":
-                    pose.position.y -= self.cart_delta
+                    pose.position.y -= self.cart_position_delta
                 elif dir == "+z":
-                    pose.position.z += self.cart_delta
+                    pose.position.z += self.cart_position_delta
                 elif dir == "-z":
-                    pose.position.z -= self.cart_delta
-                msg.pose.append(pose)
-                self.ros_node.send_mp_command(
-                    cartesian_target=msg, mode="cartesian"
+                    pose.position.z -= self.cart_position_delta
+
+                quat = np.array(
+                    [
+                        pose.orientation.x,
+                        pose.orientation.y,
+                        pose.orientation.z,
+                        pose.orientation.w,
+                    ]
                 )
+                if dir == "+roll":
+                    quat = (
+                        sciR.from_quat(quat)
+                        * sciR.from_euler("x", self.cart_orientation_delta)
+                    ).as_quat()
+                elif dir == "-roll":
+                    quat = (
+                        sciR.from_quat(quat)
+                        * sciR.from_euler("x", -self.cart_orientation_delta)
+                    ).as_quat()
+                elif dir == "+pitch":
+                    quat = (
+                        sciR.from_quat(quat)
+                        * sciR.from_euler("y", self.cart_orientation_delta)
+                    ).as_quat()
+                elif dir == "-pitch":
+                    quat = (
+                        sciR.from_quat(quat)
+                        * sciR.from_euler("y", -self.cart_orientation_delta)
+                    ).as_quat()
+                elif dir == "+yaw":
+                    quat = (
+                        sciR.from_quat(quat)
+                        * sciR.from_euler("z", self.cart_orientation_delta)
+                    ).as_quat()
+                elif dir == "-yaw":
+                    quat = (
+                        sciR.from_quat(quat)
+                        * sciR.from_euler("z", -self.cart_orientation_delta)
+                    ).as_quat()
+
+                pose.orientation.x = quat[0]
+                pose.orientation.y = quat[1]
+                pose.orientation.z = quat[2]
+                pose.orientation.w = quat[3]
+
+                msg.pose.append(pose)
+                self.ros_node.send_mp_command(cartesian_target=msg, mode="cartesian")
             else:
                 print("End-Effector link does not exist")
         else:
@@ -395,6 +455,24 @@ class RobotJog:
 
     def minus_z(self):
         self.cart_set("-z")
+
+    def plus_roll(self):
+        self.cart_set("+roll")
+
+    def minus_roll(self):
+        self.cart_set("-roll")
+
+    def plus_pitch(self):
+        self.cart_set("+pitch")
+
+    def minus_pitch(self):
+        self.cart_set("-pitch")
+
+    def plus_yaw(self):
+        self.cart_set("+yaw")
+
+    def minus_yaw(self):
+        self.cart_set("-yaw")
 
     def auto_fit(self):
         if self.autofit_enabled["active"]:
@@ -436,8 +514,12 @@ class RobotJog:
                 self.ros_node.mp_future = None
                 time.sleep(0.5)
 
-                self.ros_node.joint_values = copy.deepcopy(self.ros_node.actual_joint_values)
-                self.ros_node.interpolated_joint_values = copy.deepcopy(self.ros_node.actual_joint_values)
+                self.ros_node.joint_values = copy.deepcopy(
+                    self.ros_node.actual_joint_values
+                )
+                self.ros_node.interpolated_joint_values = copy.deepcopy(
+                    self.ros_node.actual_joint_values
+                )
 
                 for joint in self.joint_names:
                     dpg.set_value(f"{joint}_slider", self.ros_node.joint_values[joint])
@@ -576,7 +658,7 @@ class RobotJog:
                             dpg.add_spacer(height=70)
                             with dpg.group(horizontal=True):
                                 dpg.add_text(
-                                    f"Sin Magnitude:",
+                                    f"Sin Magnitude (rad):",
                                 )
                                 dpg.add_input_float(
                                     tag="sin_mag",
@@ -587,7 +669,7 @@ class RobotJog:
                                 )
                             with dpg.group(horizontal=True):
                                 dpg.add_text(
-                                    f"Sin Omega:",
+                                    f"Sin Omega (rad/s):",
                                 )
                                 dpg.add_input_float(
                                     tag="sin_omega",
@@ -676,60 +758,105 @@ class RobotJog:
                             default_value=publish_interval["hz"],
                             callback=self.update_publish_interval,
                             on_enter=True,
+                            step=10,
                         )
                         dpg.add_text("", tag="Actual Publish Hz")
 
                     # dpg.add_spacer(height=10)
                     dpg.add_text("Motion Planner Command", tag="text_mp_command")
-                    with dpg.group(horizontal=True):
-                        dpg.add_button(
-                            label="ZERO",
-                            callback=self.set_zero,
-                            tag="set_zero_button",
-                            width=60,
-                            height=40,
-                        )
+                    dpg.add_button(
+                        label="ZERO",
+                        callback=self.set_zero,
+                        tag="set_zero_button",
+                        width=60,
+                        height=40,
+                    )
 
-                        if args.end_effector_link is not None:
+                    if args.end_effector_link is not None:
+                        with dpg.group(horizontal=True):
                             dpg.add_button(
-                                label="+X",
+                                label="+x",
                                 callback=self.plus_x,
                                 tag="plus_x_button",
                                 width=60,
                                 height=40,
                             )
                             dpg.add_button(
-                                label="-X",
+                                label="-x",
                                 callback=self.minus_x,
                                 tag="minus_x_button",
                                 width=60,
                                 height=40,
                             )
                             dpg.add_button(
-                                label="+Y",
+                                label="+y",
                                 callback=self.plus_y,
                                 tag="plus_y_button",
                                 width=60,
                                 height=40,
                             )
                             dpg.add_button(
-                                label="-Y",
+                                label="-y",
                                 callback=self.minus_y,
                                 tag="minus_y_button",
                                 width=60,
                                 height=40,
                             )
                             dpg.add_button(
-                                label="+Z",
+                                label="+z",
                                 callback=self.plus_z,
                                 tag="plus_z_button",
                                 width=60,
                                 height=40,
                             )
                             dpg.add_button(
-                                label="-Z",
+                                label="-z",
                                 callback=self.minus_z,
                                 tag="minus_z_button",
+                                width=60,
+                                height=40,
+                            )
+
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(
+                                label="+roll",
+                                callback=self.plus_roll,
+                                tag="plus_roll_button",
+                                width=60,
+                                height=40,
+                            )
+                            dpg.add_button(
+                                label="-roll",
+                                callback=self.minus_roll,
+                                tag="minus_roll_button",
+                                width=60,
+                                height=40,
+                            )
+                            dpg.add_button(
+                                label="+pitch",
+                                callback=self.plus_pitch,
+                                tag="plus_pitch_button",
+                                width=60,
+                                height=40,
+                            )
+                            dpg.add_button(
+                                label="-pitch",
+                                callback=self.minus_pitch,
+                                tag="minus_pitch_button",
+                                width=60,
+                                height=40,
+                            )
+                            dpg.add_button(
+                                label="+yaw",
+                                callback=self.plus_yaw,
+                                tag="plus_yaw_button",
+                                width=60,
+                                height=40,
+                            )
+                            dpg.add_button(
+                                label="-yaw",
+                                callback=self.minus_yaw,
+                                tag="minus_yaw_button",
                                 width=60,
                                 height=40,
                             )
@@ -737,12 +864,25 @@ class RobotJog:
                     if args.end_effector_link is not None:
                         with dpg.group(horizontal=True):
                             dpg.add_text(
-                                f"Cartesian Delta:",
+                                f"Cartesian Position Delta (m):",
                             )
                             dpg.add_input_float(
-                                tag="cart_delta",
+                                tag="cart_position_delta",
                                 default_value=0.0,
-                                callback=self.cart_delta_callback,
+                                callback=self.cart_position_delta_callback,
+                                width=100,
+                                step=0.01,
+                                on_enter=True,
+                            )
+
+                        with dpg.group(horizontal=True):
+                            dpg.add_text(
+                                f"Cartesian Orientation Delta (rad):",
+                            )
+                            dpg.add_input_float(
+                                tag="cart_orientation_delta",
+                                default_value=0.0,
+                                callback=self.cart_orientation_delta_callback,
                                 width=100,
                                 step=0.01,
                                 on_enter=True,
