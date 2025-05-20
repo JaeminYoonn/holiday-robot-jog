@@ -85,3 +85,13 @@ python motor_jog.py --num_joints 7 --pub_topic_name /arm/target_positions --sub_
     - cartesian orientation delta값을 입력할 수 있고 +/-로 0.01rad단위로 조절이 가능하다
     - +roll, -roll, +pitch, -pitch, +yaw, -yaw로 cartesian position/orientation delta만큼 이동할 수 있다.
     - orientation은 body frame 기준으로 delta이동이다.
+  
+- autofit
+
+  <img src="fig/autofit.png" height="200">
+
+  - autofit 버튼이 활성화 되어 있으면 자동으로 축을 맞추며 scroll로 변화가 불가능하다
+  - autofit 버튼 해제시 mouse wheel로 확대 축소가 가능하다
+  - x/y축에 마우스 포인터를 올려놓고 확대 축소를 하면 해당 축만 확대/축소가 된다
+  - shift+마우스 우클릭은 x축만 확대가 가능하다
+  - alt+마우스 우클릭은 y축만 확대가 가능하다
