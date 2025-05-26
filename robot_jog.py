@@ -22,7 +22,7 @@ from scipy.spatial.transform import Rotation as sciR
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--num_joints", type=float, default=7)
+parser.add_argument("--num_joints", type=int, default=7)
 parser.add_argument("--pub_topic_name", type=str, default="/arm/target_joint_state")
 parser.add_argument("--sub_topic_name_joint", type=str, default="/arm/joint_state")
 parser.add_argument(
@@ -30,7 +30,7 @@ parser.add_argument(
     type=str,
     default="/hday/engine/motion_planner/end_effector_poses",
 )
-parser.add_argument("--len_histories", type=float, default=1000)
+parser.add_argument("--len_histories", type=int, default=1000)
 parser.add_argument("--end_effector_link", type=str, default=None)
 args = parser.parse_args()
 
