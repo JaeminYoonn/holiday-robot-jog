@@ -40,7 +40,6 @@ publish_interval = {"hz": 100}
 class JointInterfaceNode(Node):
     def __init__(
         self,
-        joint_names,
         joint_vel,
         joint_effort,
         publish_topic_name,
@@ -48,8 +47,8 @@ class JointInterfaceNode(Node):
         subscribe_topic_name_cart,
     ):
         super().__init__("joint_interface_gui")
-        self.joint_names = joint_names
         self.joint_vel = joint_vel
+        self.joint_effort = joint_effort
 
         self.qos_profile = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -78,10 +77,14 @@ class JointInterfaceNode(Node):
         )
         self.move_srv = Move.Request()
 
-        self.joint_values = {name: 0.0 for name in joint_names}
-        self.interpolated_joint_values = {name: 0.0 for name in joint_names}
-        self.joint_efforts = {name: joint_effort for name in joint_names}
-        self.actual_joint_values = {name: 0.0 for name in joint_names}
+
+        self.joint_values = {}
+        self.interpolated_joint_values = {}
+        self.joint_efforts = {}
+        self.actual_joint_values = {}
+        self.joint_limits = {}
+        self.joint_names = []
+
         self.cart_values = {}
         self.ini = True
 
@@ -94,29 +97,30 @@ class JointInterfaceNode(Node):
         self.mp_future = None
 
     def publish_joint_command(self):
-        self.interpolate()
-        if self.sin_mode:
-            for n in self.joint_names:
-                if n in self.selected_sin_joint.values():
-                    self.joint_values[n] = self.sin_ref_val[n] + self.sin_mag * np.sin(
-                        self.sin_omega * (time.time() - self.sin_time[n])
-                    )
-                    self.interpolated_joint_values[n] = copy.deepcopy(
-                        self.joint_values[n]
-                    )
+        if not self.ini:
+            self.interpolate()
+            if self.sin_mode:
+                for n in self.joint_names:
+                    if n in self.selected_sin_joint.values():
+                        self.joint_values[n] = self.sin_ref_val[n] + self.sin_mag * np.sin(
+                            self.sin_omega * (time.time() - self.sin_time[n])
+                        )
+                        self.interpolated_joint_values[n] = copy.deepcopy(
+                            self.joint_values[n]
+                        )
 
-                    dpg.set_value(f"{n}_slider", self.joint_values[n])
-                    dpg.set_value(f"{n}_input", self.joint_values[n])
+                        dpg.set_value(f"{n}_slider", self.joint_values[n])
+                        dpg.set_value(f"{n}_input", self.joint_values[n])
 
-        msg = JointState()
-        msg.header = Header()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.name = self.joint_names
-        msg.position = [self.interpolated_joint_values[n] for n in self.joint_names]
-        msg.velocity = [0.0 for n in self.joint_names]
-        msg.effort = [self.joint_efforts[n] for n in self.joint_names]
+            msg = JointState()
+            msg.header = Header()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.name = self.joint_names
+            msg.position = [self.interpolated_joint_values[n] for n in self.joint_names]
+            msg.velocity = [0.0 for n in self.joint_names]
+            msg.effort = [self.joint_efforts[n] for n in self.joint_names]
 
-        self.publisher.publish(msg)
+            self.publisher.publish(msg)
 
     def send_mp_command(self, joint_target=None, cartesian_target=None, mode="joint"):
         self.move_srv.stamp = self.get_clock().now().to_msg()
@@ -139,12 +143,15 @@ class JointInterfaceNode(Node):
 
     def joint_state_callback(self, msg):
         for i, name in enumerate(msg.name):
-            if name in self.actual_joint_values and i < len(msg.position):
-                self.actual_joint_values[name] = msg.position[i]
+            self.actual_joint_values[name] = msg.position[i]
 
         if self.ini:
-            self.joint_values = copy.deepcopy(self.actual_joint_values)
-            self.interpolated_joint_values = copy.deepcopy(self.actual_joint_values)
+            for i, name in enumerate(msg.name):
+                self.joint_names.append(name)
+                self.joint_values[name] =  msg.position[i]
+                self.interpolated_joint_values[name] = msg.position[i]
+                self.joint_efforts[name] = self.joint_effort
+                self.joint_limits[name] = (-3.14, 3.14)
             self.ini = False
 
     def cartesian_state_callback(self, msg):
@@ -175,28 +182,20 @@ class RobotJog:
     def __init__(
         self,
         ros_node,
-        joint_names,
-        joint_limits,
         joint_effort,
         len_joint_histories,
         keyboard_delta_val,
     ):
         self.ros_node = ros_node
-        self.joint_names = joint_names
-        self.joint_limits = joint_limits
         self.joint_effort = joint_effort
         self.len_joint_histories = len_joint_histories
+        self.joint_histories = {}
+        self.actual_histories = {}
         self.keyboard_delta_val = keyboard_delta_val
 
         self.selected_joint = {"name": None}
         self.key_hold_start = {}
 
-        self.joint_histories = {
-            name: [0.0] * len_joint_histories for name in joint_names
-        }
-        self.actual_histories = {
-            name: [0.0] * len_joint_histories for name in joint_names
-        }
         self.publishing_enabled = {"active": False}
         self.autofit_enabled = {"active": True}
         self.last_publish_time = {"t": 0.0}
@@ -213,7 +212,7 @@ class RobotJog:
             self.selected_joint["name"] = None
             self.ros_node.sin_mode = False
         else:
-            for j in self.joint_names:
+            for j in self.ros_node.joint_names:
                 dpg.bind_item_theme(j, 0)
                 dpg.bind_item_theme(f"Sin({j})", 0)
             dpg.bind_item_theme(sender, self.highlight_theme)
@@ -228,11 +227,11 @@ class RobotJog:
             if len(self.ros_node.selected_sin_joint) == 0:
                 self.ros_node.sin_mode = False
         else:
-            for j in self.joint_names:
+            for j in self.ros_node.joint_names:
                 dpg.bind_item_theme(j, 0)
             dpg.bind_item_theme(sender, self.highlight_theme)
 
-            for name in self.joint_names:
+            for name in self.ros_node.joint_names:
                 if name in sender:
                     self.ros_node.selected_sin_joint[sender] = name
                     self.ros_node.sin_time[name] = time.time()
@@ -272,7 +271,7 @@ class RobotJog:
                 return
 
             val = self.ros_node.joint_values[joint] + delta
-            min_val, max_val = self.joint_limits[joint]
+            min_val, max_val = self.ros_node.joint_limits[joint]
             val = max(min_val, min(max_val, val))
             self.ros_node.joint_values[joint] = val
 
@@ -289,7 +288,7 @@ class RobotJog:
     def input_callback(self, sender):
         joint = sender.replace("_input", "")
         val = dpg.get_value(sender)
-        min_val, max_val = self.joint_limits[joint]
+        min_val, max_val = self.ros_node.joint_limits[joint]
         val = max(min_val, min(max_val, val))
         self.ros_node.joint_values[joint] = val
         dpg.set_value(f"{joint}_slider", val)
@@ -327,7 +326,7 @@ class RobotJog:
 
     def set_all_efforts(self, sender):
         val = dpg.get_value("Effort All")
-        for joint in self.joint_names:
+        for joint in self.ros_node.joint_names:
             self.ros_node.joint_efforts[joint] = val
             dpg.set_value(f"{joint}_effort", val)
 
@@ -351,7 +350,7 @@ class RobotJog:
         if self.publishing_enabled["active"]:
             self.stop_publishing()
             time.sleep(0.5)
-        joint_target = np.zeros(len(self.joint_names))
+        joint_target = np.zeros(len(self.ros_node.joint_names))
         self.ros_node.send_mp_command(joint_target=joint_target, mode="joint")
         print("Set ZERO")
 
@@ -517,7 +516,7 @@ class RobotJog:
                     self.ros_node.actual_joint_values
                 )
 
-                for joint in self.joint_names:
+                for joint in self.ros_node.joint_names:
                     dpg.set_value(f"{joint}_slider", self.ros_node.joint_values[joint])
                     dpg.set_value(f"{joint}_input", self.ros_node.joint_values[joint])
                 self.start_publishing()
@@ -527,7 +526,7 @@ class RobotJog:
             now - self.last_publish_time["t"] >= 1 / publish_interval["hz"]
         ):
 
-            for joint in self.joint_names:
+            for joint in self.ros_node.joint_names:
                 self.joint_histories[joint].append(
                     self.ros_node.interpolated_joint_values[joint]
                 )
@@ -625,6 +624,13 @@ class RobotJog:
             print("Cannot subscribe robot joint state")
             time.sleep(0.5)
 
+        self.joint_histories = {
+            name: [0.0] * self.len_joint_histories for name in self.ros_node.joint_names
+        }
+        self.actual_histories = {
+            name: [0.0] * self.len_joint_histories for name in self.ros_node.joint_names
+        }
+
         with dpg.window(label="Joint Control Panel", tag="main_window"):
             with dpg.group(horizontal=True):
                 with dpg.child_window(width=600):
@@ -632,7 +638,7 @@ class RobotJog:
                     with dpg.group(horizontal=True):
                         with dpg.group():
                             dpg.add_text("Select Joint", tag="text_joint_select")
-                            for name in self.joint_names:
+                            for name in self.ros_node.joint_names:
                                 dpg.add_button(
                                     label=name,
                                     tag=name,
@@ -642,7 +648,7 @@ class RobotJog:
                         dpg.add_spacer(width=20)
                         with dpg.group():
                             dpg.add_text("Sinusoidal Motion", tag="text_sin_motion")
-                            for name in self.joint_names:
+                            for name in self.ros_node.joint_names:
                                 dpg.add_button(
                                     label=f"Sin({name})",
                                     tag=f"Sin({name})",
@@ -677,8 +683,8 @@ class RobotJog:
 
                     dpg.add_spacer(height=10)
                     dpg.add_text("Joint Commands", tag="text_joint_commands")
-                    for name in self.joint_names:
-                        min_val, max_val = self.joint_limits[name]
+                    for name in self.ros_node.joint_names:
+                        min_val, max_val = self.ros_node.joint_limits[name]
                         with dpg.group(horizontal=True):
                             dpg.add_text(f"{name}", bullet=True)
                             dpg.add_slider_float(
@@ -708,14 +714,14 @@ class RobotJog:
 
                     dpg.add_spacer(height=10)
                     dpg.add_text("Joint States", tag="text_joint_states")
-                    for joint in self.joint_names:
+                    for joint in self.ros_node.joint_names:
                         dpg.add_text(
                             f"Actual: 0.000", tag=f"{joint}_actual_text", bullet=True
                         )
 
                     dpg.add_spacer(height=10)
                     dpg.add_text("Individual Effort Settings", tag="text_effort")
-                    for name in self.joint_names:
+                    for name in self.ros_node.joint_names:
                         dpg.add_input_float(
                             tag=f"{name}_effort",
                             label=f"{name} Effort",
@@ -890,8 +896,8 @@ class RobotJog:
                         label="AutoFit", callback=self.auto_fit, tag="Autofit"
                     )
                     dpg.bind_item_theme("Autofit", self.highlight_theme)
-                    for name in self.joint_names:
-                        min_val, max_val = self.joint_limits[name]
+                    for name in self.ros_node.joint_names:
+                        min_val, max_val = self.ros_node.joint_limits[name]
                         with dpg.plot(
                             label=f"{name}_plot",
                             height=160,
@@ -954,9 +960,6 @@ class RobotJog:
 
 
 def main():
-
-    joint_names = [f"joint{i+1}" for i in range(args.num_joints)]
-    joint_limits = {name: (-3.14, 3.14) for name in joint_names}
     joint_effort = 0.8
     publish_topic_name = args.pub_topic_name
     subscribe_topic_name_joint = args.sub_topic_name_joint
@@ -970,7 +973,6 @@ def main():
 
     rclpy.init()
     ros_node = JointInterfaceNode(
-        joint_names,
         joint_vel,
         joint_effort,
         publish_topic_name,
@@ -980,8 +982,6 @@ def main():
     dpg.create_context()
     robot_jog = RobotJog(
         ros_node,
-        joint_names,
-        joint_limits,
         joint_effort,
         len_joint_histories,
         keyboard_delta_val,
