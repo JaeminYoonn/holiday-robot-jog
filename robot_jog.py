@@ -87,19 +87,19 @@ class JointInterfaceNode(Node):
 
         self.sin_mag = 0.0
         self.sin_omega = 0.0
-        self.sin_time = 0.0
-        self.sin_ref_val = 0.0
+        self.sin_time = {}
+        self.sin_ref_val = {}
         self.sin_mode = False
-        self.sin_joint_name = None
+        self.selected_sin_joint = {}
         self.mp_future = None
 
     def publish_joint_command(self):
         self.interpolate()
         if self.sin_mode:
             for n in self.joint_names:
-                if self.sin_joint_name == n:
-                    self.joint_values[n] = self.sin_ref_val + self.sin_mag * np.sin(
-                        self.sin_omega * (time.time() - self.sin_time)
+                if n in self.selected_sin_joint.values():
+                    self.joint_values[n] = self.sin_ref_val[n] + self.sin_mag * np.sin(
+                        self.sin_omega * (time.time() - self.sin_time[n])
                     )
                     self.interpolated_joint_values[n] = copy.deepcopy(
                         self.joint_values[n]
@@ -221,27 +221,23 @@ class RobotJog:
             self.ros_node.sin_mode = False
 
     def select_sin_mode_callback(self, sender):
-        if self.selected_joint["name"] == sender:
+        if sender in self.ros_node.selected_sin_joint.keys():
             # Deselect if already selected
             dpg.bind_item_theme(sender, 0)
-            self.selected_joint["name"] = None
-            self.ros_node.sin_mode = False
+            self.ros_node.selected_sin_joint.pop(sender, None)
+            if len(self.ros_node.selected_sin_joint) == 0:
+                self.ros_node.sin_mode = False
         else:
             for j in self.joint_names:
                 dpg.bind_item_theme(j, 0)
-                dpg.bind_item_theme(f"Sin({j})", 0)
             dpg.bind_item_theme(sender, self.highlight_theme)
-            self.selected_joint["name"] = sender
-            self.ros_node.sin_time = time.time()
 
             for name in self.joint_names:
                 if name in sender:
-                    # ros_node.sin_ref_val = ros_node.actual_joint_values[name]
-                    self.ros_node.sin_ref_val = self.ros_node.interpolated_joint_values[
-                        name
-                    ]
-                    self.ros_node.sin_joint_name = name
-            self.ros_node.sin_mode = True
+                    self.ros_node.selected_sin_joint[sender] = name
+                    self.ros_node.sin_time[name] = time.time()
+                    self.ros_node.sin_ref_val[name] = self.ros_node.interpolated_joint_values[name]
+                    self.ros_node.sin_mode = True
 
     def keyboard_callback(self, sender, app_data):
         if not isinstance(app_data, (list, tuple)) or len(app_data) != 2:
@@ -966,8 +962,9 @@ def main():
     subscribe_topic_name_joint = args.sub_topic_name_joint
     subscribe_topic_name_cart = args.sub_topic_name_cart
     # publish_topic_name = "/arm/joint_states"
-    # subscribe_topic_name = "/arm/joint_states_temp"
-    joint_vel = 0.2  ## rad/s
+    # subscribe_top
+    # ic_name = "/arm/joint_states_temp"
+    joint_vel = 0.5 ## rad/s
     keyboard_delta_val = 0.05  ## rad
     len_joint_histories = args.len_histories
 
